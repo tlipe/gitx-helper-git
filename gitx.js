@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const {execSync} = require('child_process');
+const { execSync } = require('child_process');
 const fs = require('fs');
 
 // ===== colors =====
@@ -47,11 +47,11 @@ function inRepo() {
 // ===== core =====
 function ensureRepo() {
   if (!hasGit()) {
-    log('git não instalado', c.red);
+    log('git not installed', c.red);
     process.exit(1);
   }
   if (!inRepo()) {
-    log('init repo', c.blue);
+    log('initializing repo', c.blue);
     run('git init');
   }
 }
@@ -63,12 +63,12 @@ function getBranch() {
 function ensureMain() {
   let branch = getBranch();
   if (!branch) {
-    log('criando branch main', c.blue);
+    log('creating main branch', c.blue);
     run('git checkout -b main');
     return 'main';
   }
   if (branch !== 'main') {
-    log(`renomeando branch ${branch} -> main`, c.yellow);
+    log(`renaming branch ${branch} -> main`, c.yellow);
     run('git branch -M main');
   }
   return 'main';
@@ -81,10 +81,10 @@ function hasRemote() {
 function ensureRemote(url) {
   if (!hasRemote()) {
     if (!url) {
-      log('faltando remote', c.red);
+      log('missing remote', c.red);
       process.exit(1);
     }
-    log('adicionando origin', c.blue);
+    log('adding origin', c.blue);
     run(`git remote add origin ${url}`);
   }
 }
@@ -93,7 +93,7 @@ function fixRemoteIfInvalid() {
   const url = sh('git remote get-url origin');
   if (url.includes('/tree/')) {
     const clean = url.split('/tree/')[0];
-    log('corrigindo remote inválido', c.yellow);
+    log('fixing invalid remote', c.yellow);
     run(`git remote set-url origin ${clean}`);
   }
 }
@@ -104,40 +104,78 @@ function hasChanges() {
 
 function commit(msg) {
   if (!hasChanges()) {
-    log('sem mudanças', c.gray);
+    log('no changes', c.gray);
     return false;
   }
-  log('commit...', c.cyan);
+  log('committing...', c.cyan);
   run('git add .');
   run(`git commit -m "${msg}"`);
   return true;
 }
 
+// ===== smart git ops =====
+function tryRebase() {
+  return sh('git pull --rebase origin main');
+}
+
+function tryRebaseAuto() {
+  return sh('git pull --rebase --autostash origin main');
+}
+
+function tryMerge() {
+  return sh('git pull origin main');
+}
+
 function safePull() {
   log('pull (rebase)...', c.cyan);
-  const out = sh('git pull --rebase origin main');
-  if (out.includes('CONFLICT')) {
-    log('conflito detectado', c.red);
-    process.exit(1);
+
+  let out = tryRebase();
+
+  if (out.includes('CONFLICT') || out.includes('fatal')) {
+    log('rebase failed → autostash', c.yellow);
+
+    out = tryRebaseAuto();
+
+    if (out.includes('CONFLICT') || out.includes('fatal')) {
+      log('autostash failed → merge fallback', c.yellow);
+
+      out = tryMerge();
+
+      if (out.includes('CONFLICT')) {
+        log('manual conflict resolution required', c.red);
+        process.exit(1);
+      }
+    }
   }
+
   return out;
 }
 
 function safePush() {
   log('push...', c.cyan);
-  const out = sh('git push -u origin main');
+
+  let out = sh('git push -u origin main');
+
   if (out.includes('rejected')) {
-    log('push rejeitado → rebase automático', c.yellow);
-    run('git pull --rebase origin main');
-    return sh('git push -u origin main');
+    log('push rejected → trying automatic sync', c.yellow);
+
+    safePull();
+    out = sh('git push -u origin main');
+
+    if (out.includes('rejected')) {
+      log('push still rejected', c.red);
+      log('use: gitx force', c.yellow);
+      process.exit(1);
+    }
   }
+
   return out;
 }
 
 function autoStash() {
   const status = sh('git status --porcelain');
   if (status && !status.includes('??')) {
-    log('stash automático', c.yellow);
+    log('automatic stash', c.yellow);
     run('git stash');
     return true;
   }
@@ -146,9 +184,14 @@ function autoStash() {
 
 function popStash(stashed) {
   if (stashed) {
-    log('restaurando stash', c.yellow);
-    run('git stash pop || true');
+    log('restoring stash', c.yellow);
+    sh('git stash pop');
   }
+}
+
+function isRepoEmptyRemote() {
+  const out = sh('git ls-remote --heads origin');
+  return !out;
 }
 
 function sync(msg, url) {
@@ -160,7 +203,13 @@ function sync(msg, url) {
   const stashed = autoStash();
 
   commit(msg);
-  safePull();
+
+  if (!isRepoEmptyRemote()) {
+    safePull();
+  } else {
+    log('empty remote detected (first push)', c.gray);
+  }
+
   const res = safePush();
 
   popStash(stashed);
@@ -169,11 +218,17 @@ function sync(msg, url) {
   console.log(res);
 }
 
+function forcePush() {
+  log('forcing push (overwrites remote)', c.red);
+  run('git push -u origin main --force');
+}
+
 // ===== cli =====
 function help() {
   console.log(`
 gitx init <repo_url>
 gitx sync "msg"
+gitx force
 gitx status
 gitx set-remote <repo_url>
 `);
@@ -186,9 +241,7 @@ function main() {
     case 'init':
       ensureRepo();
       ensureMain();
-
       ensureRemote(args[0]);
-      
       fixRemoteIfInvalid();
       log('ok', c.green);
       break;
@@ -197,14 +250,18 @@ function main() {
       sync(args.join(' ') || 'update');
       break;
 
+    case 'force':
+      forcePush();
+      break;
+
     case 'status':
       run('git status -sb');
       break;
 
     case 'set-remote':
-      if (!args[0]) return log('faltando url', c.red);
+      if (!args[0]) return log('missing url', c.red);
       run(`git remote set-url origin ${args[0]}`);
-      log('remote atualizado', c.green);
+      log('remote updated', c.green);
       break;
 
     default:
