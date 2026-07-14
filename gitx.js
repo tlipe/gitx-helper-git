@@ -60,17 +60,30 @@ function getBranch() {
   return sh('git branch --show-current');
 }
 
+function branchExists(name) {
+  return !!sh(`git show-ref --verify --quiet refs/heads/${name}`);
+}
+
 function ensureMain() {
   let branch = getBranch();
+
   if (!branch) {
+    if (branchExists('main')) {
+      log('switching to existing main', c.yellow);
+      run('git checkout main');
+      return 'main';
+    }
+
     log('creating main branch', c.blue);
     run('git checkout -b main');
     return 'main';
   }
+
   if (branch !== 'main') {
     log(`renaming branch ${branch} -> main`, c.yellow);
     run('git branch -M main');
   }
+
   return 'main';
 }
 
