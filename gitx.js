@@ -247,6 +247,9 @@ gitx sync "msg"
 gitx force
 gitx status
 gitx set-remote <repo_url>
+
+gitx --version or -v
+gitx --help or help
 `);
 }
 
