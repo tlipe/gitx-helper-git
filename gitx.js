@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 
-const { execSync } = require('child_process');
+const {execSync} = require('child_process');
+
 const fs = require('fs');
+
+const pkg = require('./package.json');
 
 // ===== colors =====
 const c = {
@@ -249,6 +252,11 @@ gitx set-remote <repo_url>
 
 function main() {
   const [,, cmd, ...args] = process.argv;
+
+  if (cmd === '--version' || cmd === '-v') {
+    console.log(pkg.version);
+    return;
+  }
 
   switch (cmd) {
     case 'init':
