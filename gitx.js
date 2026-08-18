@@ -43,6 +43,28 @@ function success(message) {
 
 // ===== process helpers =====
 
+function commandExists(command) {
+  const executable = process.platform === 'win32'
+    ? `${command}.cmd`
+    : command;
+
+  try {
+    execFileSync(executable, ['--version'], {
+      stdio: 'ignore'
+    });
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function npmCommand() {
+  return process.platform === 'win32'
+    ? 'npm.cmd'
+    : 'npm';
+}
+
 function git(args, options = {}) {
   const {
     silent = false,
@@ -51,7 +73,9 @@ function git(args, options = {}) {
 
   try {
     return execFileSync('git', args, {
-      stdio: silent ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+      stdio: silent
+        ? ['ignore', 'pipe', 'pipe']
+        : 'inherit',
       encoding: 'utf8'
     }).trim();
   } catch (error) {
@@ -81,22 +105,6 @@ function gitRead(args) {
   });
 }
 
-function commandExists(command) {
-  try {
-    execFileSync(command, ['--version'], {
-      stdio: 'ignore'
-    });
-
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function npmCommand() {
-  return process.platform === 'win32' ? 'npm.cmd' : 'npm';
-}
-
 function npm(args, options = {}) {
   const {
     silent = false,
@@ -105,7 +113,9 @@ function npm(args, options = {}) {
 
   try {
     return execFileSync(npmCommand(), args, {
-      stdio: silent ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+      stdio: silent
+        ? ['ignore', 'pipe', 'pipe']
+        : 'inherit',
       encoding: 'utf8'
     }).trim();
   } catch (error) {
@@ -128,8 +138,14 @@ function npm(args, options = {}) {
   }
 }
 
+function ensureGit() {
+  if (!commandExists('git')) {
+    fail('git is not installed or is not available in PATH.');
+  }
+}
+
 function ensureNpm() {
-  if (!commandExists(npmCommand())) {
+  if (!commandExists('npm')) {
     fail('npm is not installed or is not available in PATH.');
   }
 }
@@ -141,12 +157,6 @@ function isGitRepository() {
     'rev-parse',
     '--is-inside-work-tree'
   ]) === 'true';
-}
-
-function ensureGit() {
-  if (!commandExists('git')) {
-    fail('git is not installed or is not available in PATH.');
-  }
 }
 
 function ensureRepository() {
@@ -214,25 +224,7 @@ function remoteBranchExists(branch, remote = 'origin') {
   ]);
 }
 
-function remoteHead(remote = 'origin') {
-  const value = gitRead([
-    'symbolic-ref',
-    '--short',
-    `refs/remotes/${remote}/HEAD`
-  ]);
-
-  return value.replace(`${remote}/`, '');
-}
-
 // ===== working tree =====
-
-function status() {
-  return gitRead([
-    'status',
-    '--porcelain=v2',
-    '--branch'
-  ]);
-}
 
 function hasChanges() {
   return !!gitRead([
@@ -321,7 +313,10 @@ function ensureRemote(url) {
   }
 
   if (!url) {
-    fail('No origin remote configured. Use: gitx init <repo_url>');
+    fail(
+      'No origin remote configured. ' +
+      'Use: gitx init <repo_url>'
+    );
   }
 
   if (!validateRemoteUrl(url)) {
@@ -605,7 +600,7 @@ function sync(message) {
   if (!hasRemote()) {
     fail(
       'No origin remote configured. ' +
-      'Use: gitx set-remote <repo_url>'
+      'Use: gitx init <repo_url>'
     );
   }
 
@@ -691,6 +686,31 @@ function forcePush() {
 
 // ===== update =====
 
+function getInstalledGitxVersion() {
+  const output = npm([
+    'list',
+    '--global',
+    'gitx',
+    '--depth=0',
+    '--json'
+  ], {
+    silent: true,
+    allowFailure: true
+  });
+
+  if (!output) {
+    return '';
+  }
+
+  try {
+    const data = JSON.parse(output);
+
+    return data.dependencies?.gitx?.version || '';
+  } catch {
+    return '';
+  }
+}
+
 function update() {
   ensureNpm();
 
@@ -705,28 +725,7 @@ function update() {
     gitxRepository
   ]);
 
-  const installedPackage = npm([
-    'list',
-    '--global',
-    'gitx',
-    '--depth=0',
-    '--json'
-  ], {
-    silent: true,
-    allowFailure: true
-  });
-
-  let installedVersion = '';
-
-  try {
-    const data = JSON.parse(installedPackage);
-
-    installedVersion =
-      data.dependencies?.gitx?.version ||
-      '';
-  } catch {
-    installedVersion = '';
-  }
+  const installedVersion = getInstalledGitxVersion();
 
   if (!installedVersion) {
     fail(
@@ -760,9 +759,12 @@ function doctor() {
   console.log('');
 
   console.log(`Git:        ${commandExists('git') ? 'OK' : 'MISSING'}`);
+  console.log(`npm:        ${commandExists('npm') ? 'OK' : 'MISSING'}`);
   console.log(`Repository: ${root || 'INVALID'}`);
   console.log(`Branch:     ${branch || 'DETACHED'}`);
-  console.log(`HEAD:       ${hasHead() ? currentCommit().slice(0, 12) : 'EMPTY'}`);
+  console.log(
+    `HEAD:       ${hasHead() ? currentCommit().slice(0, 12) : 'EMPTY'}`
+  );
   console.log(`Origin:     ${remote || 'NOT CONFIGURED'}`);
   console.log(`Changes:    ${hasChanges() ? 'YES' : 'NO'}`);
   console.log(`Untracked:  ${hasUntrackedFiles() ? 'YES' : 'NO'}`);
