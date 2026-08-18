@@ -124,37 +124,24 @@ function npm(args, options = {}) {
   } = options;
 
   try {
-    if (process.platform === 'win32') {
-      return execFileSync(
-        process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe',
-        [
-          '/d',
-          '/s',
-          '/c',
-          'npm',
-          ...args
-        ],
-        {
-          stdio: silent
-            ? ['ignore', 'pipe', 'pipe']
-            : 'inherit',
-          encoding: 'utf8',
-          windowsHide: false
-        }
-      ).trim();
-    }
-
-    return execFileSync(
-      'npm',
+    const result = execFileSync(
+      process.platform === 'win32'
+        ? 'npm.cmd'
+        : 'npm',
       args,
       {
         stdio: silent
           ? ['ignore', 'pipe', 'pipe']
           : 'inherit',
         encoding: 'utf8',
-        windowsHide: false
+        windowsHide: false,
+        shell: process.platform === 'win32'
       }
-    ).trim();
+    );
+
+    return typeof result === 'string'
+      ? result.trim()
+      : '';
   } catch (error) {
     if (allowFailure) {
       return '';
