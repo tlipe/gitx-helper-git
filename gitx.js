@@ -126,26 +126,6 @@ function npm(args, options = {}) {
   const npmPath = getNpmPath();
 
   try {
-    if (process.platform === 'win32') {
-      return execFileSync(
-        process.env.ComSpec || 'cmd.exe',
-        [
-          '/d',
-          '/s',
-          '/c',
-          npmPath,
-          ...args
-        ],
-        {
-          stdio: silent
-            ? ['ignore', 'pipe', 'pipe']
-            : 'inherit',
-          encoding: 'utf8',
-          windowsHide: false
-        }
-      ).trim();
-    }
-
     return execFileSync(
       npmPath,
       args,
@@ -154,7 +134,8 @@ function npm(args, options = {}) {
           ? ['ignore', 'pipe', 'pipe']
           : 'inherit',
         encoding: 'utf8',
-        windowsHide: false
+        windowsHide: false,
+        shell: process.platform === 'win32'
       }
     ).trim();
   } catch (error) {
@@ -176,6 +157,7 @@ function npm(args, options = {}) {
     process.exit(1);
   }
 }
+
 function git(args, options = {}) {
   const {
     silent = false,
