@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
-const {execSync} = require('child_process');
-
+const {execFileSync} = require('child_process');
 const fs = require('fs');
-
+const path = require('path');
 const pkg = require('./package.json');
 
 // ===== colors =====
+
 const c = {
   reset: '\x1b[0m',
   red: '\x1b[31m',
@@ -14,282 +14,1058 @@ const c = {
   yellow: '\x1b[33m',
   blue: '\x1b[34m',
   cyan: '\x1b[36m',
-  gray: '\x1b[90m'
+  gray: '\x1b[90m',
+  white: '\x1b[37m'
 };
 
-function log(msg, color = c.reset) {
-  console.log(color + msg + c.reset);
+function log(message, color = c.reset) {
+  console.log(`${color}${message}${c.reset}`);
 }
 
-// ===== utils =====
-function sh(cmd, silent = true) {
+function fail(message, code = 1) {
+  log(message, c.red);
+  process.exit(code);
+}
+
+function warn(message) {
+  log(message, c.yellow);
+}
+
+function info(message) {
+  log(message, c.cyan);
+}
+
+function success(message) {
+  log(message, c.green);
+}
+
+// ===== process helpers =====
+
+function git(args, options = {}) {
+  const {
+    silent = false,
+    allowFailure = false
+  } = options;
+
   try {
-    return execSync(cmd, { stdio: silent ? 'pipe' : 'inherit' }).toString().trim();
-  } catch (e) {
-    return (e.stdout?.toString() || e.message || '').trim();
+    return execFileSync('git', args, {
+      stdio: silent ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+      encoding: 'utf8'
+    }).trim();
+  } catch (error) {
+    if (allowFailure) {
+      return '';
+    }
+
+    const stderr = error.stderr?.toString().trim();
+    const stdout = error.stdout?.toString().trim();
+
+    if (stderr) {
+      log(stderr, c.red);
+    } else if (stdout) {
+      log(stdout, c.red);
+    } else {
+      log(error.message, c.red);
+    }
+
+    process.exit(1);
   }
 }
 
-function run(cmd) {
-  execSync(cmd, { stdio: 'inherit' });
+function gitRead(args) {
+  return git(args, {
+    silent: true,
+    allowFailure: true
+  });
 }
 
-function hasGit() {
+function commandExists(command) {
   try {
-    execSync('git --version', { stdio: 'ignore' });
+    execFileSync(command, ['--version'], {
+      stdio: 'ignore'
+    });
+
     return true;
   } catch {
     return false;
   }
 }
 
-function inRepo() {
-  return fs.existsSync('.git');
+// ===== repository state =====
+
+function isGitRepository() {
+  return gitRead([
+    'rev-parse',
+    '--is-inside-work-tree'
+  ]) === 'true';
 }
 
-// ===== core =====
-function ensureRepo() {
-  if (!hasGit()) {
-    log('git not installed', c.red);
-    process.exit(1);
-  }
-  if (!inRepo()) {
-    log('initializing repo', c.blue);
-    run('git init');
-  }
-}
-
-function getBranch() {
-  return sh('git branch --show-current');
-}
-
-function branchExists(name) {
-  return !!sh(`git show-ref --verify --quiet refs/heads/${name}`);
-}
-
-function ensureMain() {
-  let branch = getBranch();
-
-  if (!branch) {
-    if (branchExists('main')) {
-      log('switching to existing main', c.yellow);
-      run('git checkout main');
-      return 'main';
-    }
-
-    log('creating main branch', c.blue);
-    run('git checkout -b main');
-    return 'main';
-  }
-
-  if (branch !== 'main') {
-    log(`renaming branch ${branch} -> main`, c.yellow);
-    run('git branch -M main');
-  }
-
-  return 'main';
-}
-
-function hasRemote() {
-  return sh('git remote').includes('origin');
-}
-
-function ensureRemote(url) {
-  if (!hasRemote()) {
-    if (!url) {
-      log('missing remote', c.red);
-      process.exit(1);
-    }
-    log('adding origin', c.blue);
-    run(`git remote add origin ${url}`);
+function ensureGit() {
+  if (!commandExists('git')) {
+    fail('git is not installed or is not available in PATH.');
   }
 }
 
-function fixRemoteIfInvalid() {
-  const url = sh('git remote get-url origin');
-  if (url.includes('/tree/')) {
-    const clean = url.split('/tree/')[0];
-    log('fixing invalid remote', c.yellow);
-    run(`git remote set-url origin ${clean}`);
+function ensureRepository() {
+  ensureGit();
+
+  if (!isGitRepository()) {
+    fail('Not inside a Git repository.');
   }
+}
+
+function repositoryRoot() {
+  return gitRead([
+    'rev-parse',
+    '--show-toplevel'
+  ]);
+}
+
+function currentBranch() {
+  return gitRead([
+    'branch',
+    '--show-current'
+  ]);
+}
+
+function currentCommit() {
+  return gitRead([
+    'rev-parse',
+    'HEAD'
+  ]);
+}
+
+function hasHead() {
+  return !!gitRead([
+    'rev-parse',
+    '--verify',
+    'HEAD'
+  ]);
+}
+
+function isDetachedHead() {
+  return !currentBranch();
+}
+
+function hasRemote(name = 'origin') {
+  return !!gitRead([
+    'remote',
+    'get-url',
+    name
+  ]);
+}
+
+function remoteUrl(name = 'origin') {
+  return gitRead([
+    'remote',
+    'get-url',
+    name
+  ]);
+}
+
+function remoteBranchExists(branch, remote = 'origin') {
+  return !!gitRead([
+    'show-ref',
+    '--verify',
+    `refs/remotes/${remote}/${branch}`
+  ]);
+}
+
+function remoteHead(remote = 'origin') {
+  const value = gitRead([
+    'symbolic-ref',
+    '--short',
+    `refs/remotes/${remote}/HEAD`
+  ]);
+
+  return value.replace(`${remote}/`, '');
+}
+
+// ===== working tree =====
+
+function status() {
+  return gitRead([
+    'status',
+    '--porcelain=v2',
+    '--branch'
+  ]);
 }
 
 function hasChanges() {
-  return !!sh('git status --porcelain');
+  return !!gitRead([
+    'status',
+    '--porcelain=v2'
+  ]);
 }
 
-function commit(msg) {
-  if (!hasChanges()) {
-    log('no changes', c.gray);
+function hasUntrackedFiles() {
+  const output = gitRead([
+    'status',
+    '--porcelain=v2'
+  ]);
+
+  return output
+    .split('\n')
+    .some(line => line.startsWith('?'));
+}
+
+function hasMergeConflict() {
+  const output = gitRead([
+    'status',
+    '--porcelain=v2'
+  ]);
+
+  return output
+    .split('\n')
+    .some(line => line.startsWith('u '));
+}
+
+function ensureNoOperationInProgress() {
+  const gitDir = gitRead([
+    'rev-parse',
+    '--git-dir'
+  ]);
+
+  if (!gitDir) {
+    return;
+  }
+
+  const operations = [
+    ['rebase-merge', 'rebase'],
+    ['rebase-apply', 'rebase'],
+    ['MERGE_HEAD', 'merge'],
+    ['CHERRY_PICK_HEAD', 'cherry-pick'],
+    ['REVERT_HEAD', 'revert']
+  ];
+
+  for (const [file, operation] of operations) {
+    if (fs.existsSync(path.join(gitDir, file))) {
+      fail(
+        `A ${operation} operation is already in progress. ` +
+        `Resolve it or run "gitx cancel".`
+      );
+    }
+  }
+}
+
+// ===== remote =====
+
+function validateRemoteUrl(url) {
+  if (!url) {
     return false;
   }
-  log('committing...', c.cyan);
-  run('git add .');
-  run(`git commit -m "${msg}"`);
-  return true;
-}
 
-// ===== smart git ops =====
-function tryRebase() {
-  return sh('git pull --rebase origin main');
-}
-
-function tryRebaseAuto() {
-  return sh('git pull --rebase --autostash origin main');
-}
-
-function tryMerge() {
-  return sh('git pull origin main');
-}
-
-function safePull() {
-  log('pull (rebase)...', c.cyan);
-
-  let out = tryRebase();
-
-  if (out.includes('CONFLICT') || out.includes('fatal')) {
-    log('rebase failed → autostash', c.yellow);
-
-    out = tryRebaseAuto();
-
-    if (out.includes('CONFLICT') || out.includes('fatal')) {
-      log('autostash failed → merge fallback', c.yellow);
-
-      out = tryMerge();
-
-      if (out.includes('CONFLICT')) {
-        log('manual conflict resolution required', c.red);
-        process.exit(1);
-      }
-    }
+  if (url.startsWith('git@')) {
+    return /^git@[^:]+:[^/]+\/.+$/.test(url);
   }
 
-  return out;
+  try {
+    const parsed = new URL(url);
+
+    return (
+      parsed.protocol === 'https:' ||
+      parsed.protocol === 'http:' ||
+      parsed.protocol === 'ssh:'
+    );
+  } catch {
+    return false;
+  }
 }
 
-function safePush() {
-  log('push...', c.cyan);
-
-  let out = sh('git push -u origin main');
-
-  if (out.includes('rejected')) {
-    log('push rejected → trying automatic sync', c.yellow);
-
-    safePull();
-    out = sh('git push -u origin main');
-
-    if (out.includes('rejected')) {
-      log('push still rejected', c.red);
-      log('use: gitx force', c.yellow);
-      process.exit(1);
-    }
+function ensureRemote(url) {
+  if (hasRemote()) {
+    return;
   }
 
-  return out;
+  if (!url) {
+    fail('No origin remote configured. Use: gitx init <repo_url>');
+  }
+
+  if (!validateRemoteUrl(url)) {
+    fail('Invalid repository URL.');
+  }
+
+  info(`Adding origin: ${url}`);
+
+  git([
+    'remote',
+    'add',
+    'origin',
+    url
+  ]);
 }
 
-function autoStash() {
-  const status = sh('git status --porcelain');
-  if (status && !status.includes('??')) {
-    log('automatic stash', c.yellow);
-    run('git stash');
+function fixRemoteIfInvalid() {
+  const url = remoteUrl();
+
+  if (!url) {
+    return;
+  }
+
+  if (url.includes('/tree/')) {
+    const clean = url.split('/tree/')[0];
+
+    warn(`Invalid repository URL detected.`);
+    warn(`Remote contains "/tree/".`);
+
+    git([
+      'remote',
+      'set-url',
+      'origin',
+      clean
+    ]);
+
+    success(`Remote normalized: ${clean}`);
+  }
+}
+
+// ===== branch =====
+
+function ensureBranch() {
+  if (!hasHead()) {
+    info('Repository has no commits.');
+
+    git([
+      'checkout',
+      '-b',
+      'main'
+    ]);
+
+    return 'main';
+  }
+
+  const branch = currentBranch();
+
+  if (!branch) {
+    fail(
+      'Detached HEAD detected. ' +
+      'gitx will not modify a detached HEAD automatically.'
+    );
+  }
+
+  return branch;
+}
+
+function ensureRemoteBranch(branch) {
+  if (remoteBranchExists(branch)) {
     return true;
   }
+
+  const remoteDefault = remoteHead();
+
+  if (
+    remoteDefault &&
+    remoteDefault !== branch &&
+    remoteBranchExists(remoteDefault)
+  ) {
+    warn(
+      `Remote default branch is "${remoteDefault}", ` +
+      `but local branch is "${branch}".`
+    );
+
+    return false;
+  }
+
   return false;
 }
 
-function popStash(stashed) {
-  if (stashed) {
-    log('restoring stash', c.yellow);
-    sh('git stash pop');
+// ===== snapshots =====
+
+function snapshotName(prefix = 'gitx-safety') {
+  const now = new Date();
+
+  const timestamp = now
+    .toISOString()
+    .replace(/[-:.TZ]/g, '')
+    .slice(0, 14);
+
+  return `${prefix}-${timestamp}`;
+}
+
+function tagExists(tag) {
+  return !!gitRead([
+    'rev-parse',
+    '--verify',
+    `refs/tags/${tag}`
+  ]);
+}
+
+function createSafetySnapshot() {
+  if (!hasHead()) {
+    return null;
+  }
+
+  let tag = snapshotName();
+
+  let index = 1;
+
+  while (tagExists(tag)) {
+    tag = `${snapshotName()}-${index++}`;
+  }
+
+  git([
+    'tag',
+    tag,
+    'HEAD'
+  ]);
+
+  success(`Safety snapshot created: ${tag}`);
+
+  return tag;
+}
+
+// ===== stash =====
+
+function createStash() {
+  if (!hasChanges()) {
+    return null;
+  }
+
+  const message = `gitx-safety-${Date.now()}`;
+
+  info('Saving uncommitted work before synchronization...');
+
+  git([
+    'stash',
+    'push',
+    '--include-untracked',
+    '--message',
+    message
+  ]);
+
+  const stash = gitRead([
+    'stash',
+    'list',
+    '--format=%gd',
+    '-1'
+  ]);
+
+  if (!stash) {
+    fail(
+      'gitx could not verify the safety stash. ' +
+      'Synchronization stopped.'
+    );
+  }
+
+  success(`Work safely stored in ${stash}`);
+
+  return stash;
+}
+
+function restoreStash(stash) {
+  if (!stash) {
+    return;
+  }
+
+  info(`Restoring ${stash}...`);
+
+  const result = gitRead([
+    'stash',
+    'pop',
+    stash
+  ]);
+
+  if (hasMergeConflict()) {
+    warn(
+      'Stash restoration produced conflicts. ' +
+      'The stash was not discarded.'
+    );
+
+    fail(
+      'Resolve the conflicts manually. ' +
+      'Your previous work remains protected in the stash.'
+    );
+  }
+
+  if (result.includes('CONFLICT')) {
+    fail(
+      'Stash restoration failed. ' +
+      'The stash remains available.'
+    );
+  }
+
+  success('Local work restored.');
+}
+
+// ===== commits =====
+
+function stageAll() {
+  git([
+    'add',
+    '--all'
+  ]);
+}
+
+function commit(message) {
+  if (!hasChanges()) {
+    return false;
+  }
+
+  if (!message.trim()) {
+    message = 'update';
+  }
+
+  stageAll();
+
+  const staged = gitRead([
+    'diff',
+    '--cached',
+    '--quiet'
+  ]);
+
+  if (staged === '') {
+    info('Creating commit...');
+
+    git([
+      'commit',
+      '-m',
+      message
+    ]);
+
+    return true;
+  }
+
+  return false;
+}
+
+// ===== synchronization =====
+
+function fetchRemote() {
+  info('Fetching remote state...');
+
+  git([
+    'fetch',
+    '--prune',
+    'origin'
+  ]);
+}
+
+function rebaseOntoRemote(branch) {
+  if (!remoteBranchExists(branch)) {
+    return;
+  }
+
+  info(`Rebasing "${branch}" onto "origin/${branch}"...`);
+
+  try {
+    git([
+      'rebase',
+      `origin/${branch}`
+    ]);
+  } catch {
+    warn('Rebase stopped because Git detected a conflict.');
+
+    git([
+      'rebase',
+      '--abort'
+    ]);
+
+    fail(
+      'Synchronization stopped safely. ' +
+      'No automatic merge or conflict resolution was attempted.'
+    );
   }
 }
 
-function isRepoEmptyRemote() {
-  const out = sh('git ls-remote --heads origin');
-  return !out;
+function push(branch, force = false) {
+  info(`Pushing "${branch}"...`);
+
+  const args = [
+    'push',
+    '--set-upstream',
+    'origin',
+    branch
+  ];
+
+  if (force) {
+    args.splice(1, 0, '--force-with-lease');
+  }
+
+  git(args);
 }
 
-function sync(msg, url) {
-  ensureRepo();
-  ensureMain();
-  ensureRemote(url);
+function sync(message) {
+  ensureRepository();
+  ensureNoOperationInProgress();
+
+  const branch = ensureBranch();
+
+  if (!hasRemote()) {
+    fail(
+      'No origin remote configured. ' +
+      'Use: gitx set-remote <repo_url>'
+    );
+  }
+
   fixRemoteIfInvalid();
 
-  const stashed = autoStash();
+  const safetyTag = createSafetySnapshot();
+  const stash = createStash();
 
-  commit(msg);
+  try {
+    commit(message);
 
-  if (!isRepoEmptyRemote()) {
-    safePull();
-  } else {
-    log('empty remote detected (first push)', c.gray);
+    fetchRemote();
+
+    if (remoteBranchExists(branch)) {
+      rebaseOntoRemote(branch);
+    } else {
+      info(
+        `No remote branch named "origin/${branch}". ` +
+        `This will be treated as the first push.`
+      );
+    }
+
+    push(branch);
+
+    success('Synchronization completed safely.');
+  } catch (error) {
+    warn('Synchronization stopped.');
+
+    if (safetyTag) {
+      warn(`Safety snapshot remains available: ${safetyTag}`);
+    }
+
+    throw error;
+  } finally {
+    if (stash) {
+      restoreStash(stash);
+    }
   }
+}
 
-  const res = safePush();
+// ===== force =====
 
-  popStash(stashed);
-
-  log('ok', c.green);
-  console.log(res);
+function confirmForce() {
+  if (process.env.GITX_ALLOW_FORCE !== '1') {
+    fail(
+      'Force push is disabled by default.\n' +
+      'If you intentionally want to rewrite remote history, set:\n' +
+      'GITX_ALLOW_FORCE=1\n' +
+      'and run "gitx force" again.'
+    );
+  }
 }
 
 function forcePush() {
-  log('forcing push (overwrites remote)', c.red);
-  run('git push -u origin main --force');
+  ensureRepository();
+  ensureNoOperationInProgress();
+
+  const branch = ensureBranch();
+
+  if (!hasRemote()) {
+    fail('No origin remote configured.');
+  }
+
+  const safetyTag = createSafetySnapshot();
+
+  confirmForce();
+
+  warn(
+    `This will rewrite origin/${branch} if the remote still matches ` +
+    `your last known state.`
+  );
+
+  warn(
+    'gitx uses --force-with-lease instead of --force.'
+  );
+
+  push(branch, true);
+
+  success('Protected force push completed.');
+
+  if (safetyTag) {
+    info(`Local safety snapshot: ${safetyTag}`);
+  }
+}
+
+// ===== diagnostics =====
+
+function doctor() {
+  ensureRepository();
+
+  const root = repositoryRoot();
+  const branch = currentBranch();
+  const remote = remoteUrl();
+
+  console.log('');
+  log('gitx doctor', c.white);
+  console.log('');
+
+  console.log(`Git:        ${commandExists('git') ? 'OK' : 'MISSING'}`);
+  console.log(`Repository: ${root || 'INVALID'}`);
+  console.log(`Branch:     ${branch || 'DETACHED'}`);
+  console.log(`HEAD:       ${hasHead() ? currentCommit().slice(0, 12) : 'EMPTY'}`);
+  console.log(`Origin:     ${remote || 'NOT CONFIGURED'}`);
+  console.log(`Changes:    ${hasChanges() ? 'YES' : 'NO'}`);
+  console.log(`Untracked:  ${hasUntrackedFiles() ? 'YES' : 'NO'}`);
+  console.log(`Conflicts:  ${hasMergeConflict() ? 'YES' : 'NO'}`);
+
+  console.log('');
+
+  if (hasMergeConflict()) {
+    warn('Repository contains unresolved conflicts.');
+    return;
+  }
+
+  if (isDetachedHead()) {
+    warn('Repository is in detached HEAD state.');
+    return;
+  }
+
+  if (!remote) {
+    warn('No origin remote is configured.');
+    return;
+  }
+
+  success('Repository diagnostics completed.');
+}
+
+// ===== information =====
+
+function showStatus() {
+  ensureRepository();
+
+  const branch = currentBranch();
+  const remote = remoteUrl();
+
+  console.log('');
+
+  log(`Repository: ${repositoryRoot()}`, c.white);
+  log(`Branch: ${branch || 'detached HEAD'}`, c.white);
+  log(`Remote: ${remote || 'none'}`, c.white);
+
+  console.log('');
+
+  const output = gitRead([
+    'status',
+    '--short',
+    '--branch'
+  ]);
+
+  console.log(output || 'Working tree clean.');
+}
+
+function showDiff() {
+  ensureRepository();
+
+  git([
+    'diff',
+    '--',
+  ]);
+}
+
+function showLog() {
+  ensureRepository();
+
+  git([
+    'log',
+    '--oneline',
+    '--decorate',
+    '-20'
+  ]);
+}
+
+function showRemote() {
+  ensureRepository();
+
+  const url = remoteUrl();
+
+  if (!url) {
+    fail('No origin remote configured.');
+  }
+
+  console.log(url);
+}
+
+function snapshot() {
+  ensureRepository();
+
+  if (!hasHead()) {
+    fail('Cannot create a snapshot before the first commit.');
+  }
+
+  const tag = createSafetySnapshot();
+
+  if (tag) {
+    success(`Snapshot created: ${tag}`);
+  }
+}
+
+// ===== cancel =====
+
+function cancel() {
+  ensureRepository();
+
+  const gitDir = gitRead([
+    'rev-parse',
+    '--git-dir'
+  ]);
+
+  if (fs.existsSync(path.join(gitDir, 'rebase-merge')) ||
+      fs.existsSync(path.join(gitDir, 'rebase-apply'))) {
+    git([
+      'rebase',
+      '--abort'
+    ]);
+
+    success('Rebase cancelled.');
+    return;
+  }
+
+  if (fs.existsSync(path.join(gitDir, 'MERGE_HEAD'))) {
+    git([
+      'merge',
+      '--abort'
+    ]);
+
+    success('Merge cancelled.');
+    return;
+  }
+
+  if (fs.existsSync(path.join(gitDir, 'CHERRY_PICK_HEAD'))) {
+    git([
+      'cherry-pick',
+      '--abort'
+    ]);
+
+    success('Cherry-pick cancelled.');
+    return;
+  }
+
+  if (fs.existsSync(path.join(gitDir, 'REVERT_HEAD'))) {
+    git([
+      'revert',
+      '--abort'
+    ]);
+
+    success('Revert cancelled.');
+    return;
+  }
+
+  info('No cancellable Git operation is currently running.');
+}
+
+// ===== init =====
+
+function init(url) {
+  ensureGit();
+
+  if (!isGitRepository()) {
+    info('Initializing Git repository...');
+
+    git([
+      'init'
+    ]);
+  }
+
+  ensureRepository();
+
+  if (!hasHead()) {
+    info('Creating main branch...');
+
+    git([
+      'checkout',
+      '-b',
+      'main'
+    ]);
+  }
+
+  if (url) {
+    if (!validateRemoteUrl(url)) {
+      fail('Invalid repository URL.');
+    }
+
+    if (hasRemote()) {
+      const current = remoteUrl();
+
+      if (current !== url) {
+        warn(`origin already exists: ${current}`);
+        info(`Use "gitx set-remote ${url}" to change it.`);
+      }
+    } else {
+      ensureRemote(url);
+    }
+  }
+
+  fixRemoteIfInvalid();
+
+  success('Repository initialized.');
+}
+
+// ===== remote configuration =====
+
+function setRemote(url) {
+  ensureRepository();
+
+  if (!url) {
+    fail('Missing repository URL.');
+  }
+
+  if (!validateRemoteUrl(url)) {
+    fail('Invalid repository URL.');
+  }
+
+  if (!hasRemote()) {
+    git([
+      'remote',
+      'add',
+      'origin',
+      url
+    ]);
+
+    success('origin remote added.');
+    return;
+  }
+
+  const current = remoteUrl();
+
+  if (current === url) {
+    info('Remote is already configured with this URL.');
+    return;
+  }
+
+  warn(`Current remote: ${current}`);
+  warn(`New remote:     ${url}`);
+
+  git([
+    'remote',
+    'set-url',
+    'origin',
+    url
+  ]);
+
+  success('origin remote updated.');
 }
 
 // ===== cli =====
+
 function help() {
   console.log(`
-gitx init <repo_url>
-gitx sync "msg"
-gitx force
-gitx status
-gitx set-remote <repo_url>
+gitx - safe Git synchronization CLI
 
-gitx --version or -v
-gitx --help or help
+Usage:
+  gitx init <repo_url>
+  gitx sync "message"
+  gitx status
+  gitx diff
+  gitx log
+  gitx remote
+  gitx snapshot
+  gitx doctor
+  gitx cancel
+  gitx set-remote <repo_url>
+  gitx force
+
+Information:
+  gitx --version
+  gitx --help
+  gitx help
+
+Commands:
+  init          Initialize repository and configure origin
+  sync          Safely commit, fetch, rebase and push
+  status        Show repository state
+  diff          Show local unstaged changes
+  log           Show recent commits
+  remote        Show origin URL
+  snapshot      Create a local safety snapshot
+  doctor        Diagnose repository state
+  cancel        Abort an active Git operation
+  set-remote    Change origin URL
+  force         Protected force push using --force-with-lease
+
+Safety model:
+  - Never uses --force automatically
+  - Never automatically merges after a failed rebase
+  - Never resolves conflicts automatically
+  - Creates a safety snapshot before synchronization
+  - Preserves uncommitted and untracked files
+  - Does not rename existing branches automatically
+  - Stops when repository state is ambiguous
+  - Uses argument-safe Git execution
 `);
+
+}
+
+function unknownCommand(command) {
+  log(`Unknown command: ${command}`, c.red);
+  console.log('Run "gitx --help" to see available commands.');
+  process.exitCode = 1;
 }
 
 function main() {
-  const [,, cmd, ...args] = process.argv;
+  const [, , command, ...args] = process.argv;
 
-  if (cmd === '--version' || cmd === '-v') {
+  if (
+    command === '--version' ||
+    command === '-v'
+  ) {
     console.log(pkg.version);
     return;
   }
 
-  switch (cmd) {
-    case 'init':
-      ensureRepo();
-      ensureMain();
-      ensureRemote(args[0]);
-      fixRemoteIfInvalid();
-      log('ok', c.green);
-      break;
+  if (
+    !command ||
+    command === '--help' ||
+    command === '-h' ||
+    command === 'help'
+  ) {
+    help();
+    return;
+  }
 
-    case 'sync':
-      sync(args.join(' ') || 'update');
-      break;
+  try {
+    switch (command) {
+      case 'init':
+        init(args[0]);
+        break;
 
-    case 'force':
-      forcePush();
-      break;
+      case 'sync':
+        sync(args.join(' ') || 'update');
+        break;
 
-    case 'status':
-      run('git status -sb');
-      break;
+      case 'force':
+        forcePush();
+        break;
 
-    case 'set-remote':
-      if (!args[0]) return log('missing url', c.red);
-      run(`git remote set-url origin ${args[0]}`);
-      log('remote updated', c.green);
-      break;
+      case 'status':
+        showStatus();
+        break;
 
-    default:
-      help();
+      case 'diff':
+        showDiff();
+        break;
+
+      case 'log':
+        showLog();
+        break;
+
+      case 'remote':
+        showRemote();
+        break;
+
+      case 'snapshot':
+        snapshot();
+        break;
+
+      case 'doctor':
+        doctor();
+        break;
+
+      case 'cancel':
+        cancel();
+        break;
+
+      case 'set-remote':
+        setRemote(args[0]);
+        break;
+
+      default:
+        unknownCommand(command);
+    }
+  } catch {
+    process.exitCode = 1;
   }
 }
 
