@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
-const {execFileSync} = require('child_process');
+const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const pkg = require('./package.json');
+
+const gitxRepository = 'https://github.com/tlipe/gitx-helper-git.git';
 
 // ===== colors =====
 
@@ -88,6 +90,47 @@ function commandExists(command) {
     return true;
   } catch {
     return false;
+  }
+}
+
+function npmCommand() {
+  return process.platform === 'win32' ? 'npm.cmd' : 'npm';
+}
+
+function npm(args, options = {}) {
+  const {
+    silent = false,
+    allowFailure = false
+  } = options;
+
+  try {
+    return execFileSync(npmCommand(), args, {
+      stdio: silent ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+      encoding: 'utf8'
+    }).trim();
+  } catch (error) {
+    if (allowFailure) {
+      return '';
+    }
+
+    const stderr = error.stderr?.toString().trim();
+    const stdout = error.stdout?.toString().trim();
+
+    if (stderr) {
+      log(stderr, c.red);
+    } else if (stdout) {
+      log(stdout, c.red);
+    } else {
+      log(error.message, c.red);
+    }
+
+    process.exit(1);
+  }
+}
+
+function ensureNpm() {
+  if (!commandExists(npmCommand())) {
+    fail('npm is not installed or is not available in PATH.');
   }
 }
 
@@ -305,8 +348,8 @@ function fixRemoteIfInvalid() {
   if (url.includes('/tree/')) {
     const clean = url.split('/tree/')[0];
 
-    warn(`Invalid repository URL detected.`);
-    warn(`Remote contains "/tree/".`);
+    warn('Invalid repository URL detected.');
+    warn('Remote contains "/tree/".');
 
     git([
       'remote',
@@ -346,29 +389,6 @@ function ensureBranch() {
   return branch;
 }
 
-function ensureRemoteBranch(branch) {
-  if (remoteBranchExists(branch)) {
-    return true;
-  }
-
-  const remoteDefault = remoteHead();
-
-  if (
-    remoteDefault &&
-    remoteDefault !== branch &&
-    remoteBranchExists(remoteDefault)
-  ) {
-    warn(
-      `Remote default branch is "${remoteDefault}", ` +
-      `but local branch is "${branch}".`
-    );
-
-    return false;
-  }
-
-  return false;
-}
-
 // ===== snapshots =====
 
 function snapshotName(prefix = 'gitx-safety') {
@@ -396,7 +416,6 @@ function createSafetySnapshot() {
   }
 
   let tag = snapshotName();
-
   let index = 1;
 
   while (tagExists(tag)) {
@@ -459,7 +478,7 @@ function restoreStash(stash) {
 
   info(`Restoring ${stash}...`);
 
-  const result = gitRead([
+  git([
     'stash',
     'pop',
     stash
@@ -474,13 +493,6 @@ function restoreStash(stash) {
     fail(
       'Resolve the conflicts manually. ' +
       'Your previous work remains protected in the stash.'
-    );
-  }
-
-  if (result.includes('CONFLICT')) {
-    fail(
-      'Stash restoration failed. ' +
-      'The stash remains available.'
     );
   }
 
@@ -612,21 +624,21 @@ function sync(message) {
     } else {
       info(
         `No remote branch named "origin/${branch}". ` +
-        `This will be treated as the first push.`
+        'This will be treated as the first push.'
       );
     }
 
     push(branch);
 
     success('Synchronization completed safely.');
-  } catch (error) {
+  } catch {
     warn('Synchronization stopped.');
 
     if (safetyTag) {
       warn(`Safety snapshot remains available: ${safetyTag}`);
     }
 
-    throw error;
+    process.exitCode = 1;
   } finally {
     if (stash) {
       restoreStash(stash);
@@ -663,12 +675,10 @@ function forcePush() {
 
   warn(
     `This will rewrite origin/${branch} if the remote still matches ` +
-    `your last known state.`
+    'your last known state.'
   );
 
-  warn(
-    'gitx uses --force-with-lease instead of --force.'
-  );
+  warn('gitx uses --force-with-lease instead of --force.');
 
   push(branch, true);
 
@@ -677,6 +687,63 @@ function forcePush() {
   if (safetyTag) {
     info(`Local safety snapshot: ${safetyTag}`);
   }
+}
+
+// ===== update =====
+
+function update() {
+  ensureNpm();
+
+  const currentVersion = pkg.version;
+
+  info(`Current version: ${currentVersion}`);
+  info('Updating gitx directly from GitHub...');
+
+  npm([
+    'install',
+    '--global',
+    gitxRepository
+  ]);
+
+  const installedPackage = npm([
+    'list',
+    '--global',
+    'gitx',
+    '--depth=0',
+    '--json'
+  ], {
+    silent: true,
+    allowFailure: true
+  });
+
+  let installedVersion = '';
+
+  try {
+    const data = JSON.parse(installedPackage);
+
+    installedVersion =
+      data.dependencies?.gitx?.version ||
+      '';
+  } catch {
+    installedVersion = '';
+  }
+
+  if (!installedVersion) {
+    fail(
+      'gitx was installed, but the installed version could not be verified.'
+    );
+  }
+
+  if (installedVersion === currentVersion) {
+    info(`gitx is already up to date (${installedVersion}).`);
+    return;
+  }
+
+  success(
+    `gitx updated: ${currentVersion} -> ${installedVersion}`
+  );
+
+  info('Restart gitx to use the new version.');
 }
 
 // ===== diagnostics =====
@@ -751,7 +818,7 @@ function showDiff() {
 
   git([
     'diff',
-    '--',
+    '--'
   ]);
 }
 
@@ -785,11 +852,7 @@ function snapshot() {
     fail('Cannot create a snapshot before the first commit.');
   }
 
-  const tag = createSafetySnapshot();
-
-  if (tag) {
-    success(`Snapshot created: ${tag}`);
-  }
+  createSafetySnapshot();
 }
 
 // ===== cancel =====
@@ -802,8 +865,10 @@ function cancel() {
     '--git-dir'
   ]);
 
-  if (fs.existsSync(path.join(gitDir, 'rebase-merge')) ||
-      fs.existsSync(path.join(gitDir, 'rebase-apply'))) {
+  if (
+    fs.existsSync(path.join(gitDir, 'rebase-merge')) ||
+    fs.existsSync(path.join(gitDir, 'rebase-apply'))
+  ) {
     git([
       'rebase',
       '--abort'
@@ -947,6 +1012,7 @@ gitx - safe Git synchronization CLI
 Usage:
   gitx init <repo_url>
   gitx sync "message"
+  gitx update
   gitx status
   gitx diff
   gitx log
@@ -965,6 +1031,7 @@ Information:
 Commands:
   init          Initialize repository and configure origin
   sync          Safely commit, fetch, rebase and push
+  update        Update gitx directly from GitHub
   status        Show repository state
   diff          Show local unstaged changes
   log           Show recent commits
@@ -984,8 +1051,8 @@ Safety model:
   - Does not rename existing branches automatically
   - Stops when repository state is ambiguous
   - Uses argument-safe Git execution
+  - Updates gitx directly from the official GitHub repository
 `);
-
 }
 
 function unknownCommand(command) {
@@ -1023,6 +1090,10 @@ function main() {
 
       case 'sync':
         sync(args.join(' ') || 'update');
+        break;
+
+      case 'update':
+        update();
         break;
 
       case 'force':
