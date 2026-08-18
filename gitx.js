@@ -41,28 +41,98 @@ function success(message) {
   log(message, c.green);
 }
 
-// ===== process helpers =====
+// ===== command helpers =====
 
-function commandExists(command) {
-  const executable = process.platform === 'win32'
-    ? `${command}.cmd`
-    : command;
+function getCommandPath(command) {
+  if (process.platform !== 'win32') {
+    try {
+      execFileSync('which', [command], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        encoding: 'utf8'
+      });
+
+      return command;
+    } catch {
+      return null;
+    }
+  }
 
   try {
-    execFileSync(executable, ['--version'], {
-      stdio: 'ignore'
-    });
+    const output = execFileSync(
+      'where.exe',
+      [command],
+      {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        encoding: 'utf8'
+      }
+    ).trim();
 
-    return true;
+    const result = output
+      .split(/\r?\n/)
+      .map(value => value.trim())
+      .find(Boolean);
+
+    return result || null;
   } catch {
-    return false;
+    return null;
   }
 }
 
-function npmCommand() {
-  return process.platform === 'win32'
-    ? 'npm.cmd'
-    : 'npm';
+function commandExists(command) {
+  return !!getCommandPath(command);
+}
+
+function getNpmPath() {
+  const npmPath = getCommandPath('npm');
+
+  if (!npmPath) {
+    fail(
+      'npm could not be found.\n' +
+      'Run "where npm" in CMD to diagnose the PATH.'
+    );
+  }
+
+  return npmPath;
+}
+
+function npm(args, options = {}) {
+  const {
+    silent = false,
+    allowFailure = false
+  } = options;
+
+  const npmPath = getNpmPath();
+
+  try {
+    return execFileSync(
+      npmPath,
+      args,
+      {
+        stdio: silent
+          ? ['ignore', 'pipe', 'pipe']
+          : 'inherit',
+        encoding: 'utf8',
+        windowsHide: false
+      }
+    ).trim();
+  } catch (error) {
+    if (allowFailure) {
+      return '';
+    }
+
+    const stderr = error.stderr?.toString().trim();
+    const stdout = error.stdout?.toString().trim();
+
+    if (stderr) {
+      log(stderr, c.red);
+    } else if (stdout) {
+      log(stdout, c.red);
+    } else {
+      log(error.message, c.red);
+    }
+
+    process.exit(1);
+  }
 }
 
 function git(args, options = {}) {
@@ -72,12 +142,16 @@ function git(args, options = {}) {
   } = options;
 
   try {
-    return execFileSync('git', args, {
-      stdio: silent
-        ? ['ignore', 'pipe', 'pipe']
-        : 'inherit',
-      encoding: 'utf8'
-    }).trim();
+    return execFileSync(
+      'git',
+      args,
+      {
+        stdio: silent
+          ? ['ignore', 'pipe', 'pipe']
+          : 'inherit',
+        encoding: 'utf8'
+      }
+    ).trim();
   } catch (error) {
     if (allowFailure) {
       return '';
@@ -105,39 +179,6 @@ function gitRead(args) {
   });
 }
 
-function npm(args, options = {}) {
-  const {
-    silent = false,
-    allowFailure = false
-  } = options;
-
-  try {
-    return execFileSync(npmCommand(), args, {
-      stdio: silent
-        ? ['ignore', 'pipe', 'pipe']
-        : 'inherit',
-      encoding: 'utf8'
-    }).trim();
-  } catch (error) {
-    if (allowFailure) {
-      return '';
-    }
-
-    const stderr = error.stderr?.toString().trim();
-    const stdout = error.stdout?.toString().trim();
-
-    if (stderr) {
-      log(stderr, c.red);
-    } else if (stdout) {
-      log(stdout, c.red);
-    } else {
-      log(error.message, c.red);
-    }
-
-    process.exit(1);
-  }
-}
-
 function ensureGit() {
   if (!commandExists('git')) {
     fail('git is not installed or is not available in PATH.');
@@ -145,12 +186,10 @@ function ensureGit() {
 }
 
 function ensureNpm() {
-  if (!commandExists('npm')) {
-    fail('npm is not installed or is not available in PATH.');
-  }
+  getNpmPath();
 }
 
-// ===== repository state =====
+// ===== repository =====
 
 function isGitRepository() {
   return gitRead([
@@ -514,25 +553,15 @@ function commit(message) {
 
   stageAll();
 
-  const staged = gitRead([
-    'diff',
-    '--cached',
-    '--quiet'
+  info('Creating commit...');
+
+  git([
+    'commit',
+    '-m',
+    message
   ]);
 
-  if (staged === '') {
-    info('Creating commit...');
-
-    git([
-      'commit',
-      '-m',
-      message
-    ]);
-
-    return true;
-  }
-
-  return false;
+  return true;
 }
 
 // ===== synchronization =====
@@ -712,10 +741,11 @@ function getInstalledGitxVersion() {
 }
 
 function update() {
-  ensureNpm();
+  const npmPath = getNpmPath();
 
   const currentVersion = pkg.version;
 
+  info(`npm: ${npmPath}`);
   info(`Current version: ${currentVersion}`);
   info('Updating gitx directly from GitHub...');
 
