@@ -123,19 +123,36 @@ function npm(args, options = {}) {
     allowFailure = false
   } = options;
 
-  const npmPath = getNpmPath();
-
   try {
+    if (process.platform === 'win32') {
+      return execFileSync(
+        process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe',
+        [
+          '/d',
+          '/s',
+          '/c',
+          'npm',
+          ...args
+        ],
+        {
+          stdio: silent
+            ? ['ignore', 'pipe', 'pipe']
+            : 'inherit',
+          encoding: 'utf8',
+          windowsHide: false
+        }
+      ).trim();
+    }
+
     return execFileSync(
-      npmPath,
+      'npm',
       args,
       {
         stdio: silent
           ? ['ignore', 'pipe', 'pipe']
           : 'inherit',
         encoding: 'utf8',
-        windowsHide: false,
-        shell: process.platform === 'win32'
+        windowsHide: false
       }
     ).trim();
   } catch (error) {
@@ -764,11 +781,8 @@ function getInstalledGitxVersion() {
 }
 
 function update() {
-  const npmPath = getNpmPath();
-
   const currentVersion = pkg.version;
 
-  info(`npm: ${npmPath}`);
   info(`Current version: ${currentVersion}`);
   info('Updating gitx directly from GitHub...');
 
@@ -787,15 +801,13 @@ function update() {
   }
 
   if (installedVersion === currentVersion) {
-    info(`gitx is already up to date (${installedVersion}).`);
+    success(`gitx is already up to date (${installedVersion}).`);
     return;
   }
 
   success(
     `gitx updated: ${currentVersion} -> ${installedVersion}`
   );
-
-  info('Restart gitx to use the new version.');
 }
 
 // ===== diagnostics =====
