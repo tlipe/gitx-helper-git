@@ -93,12 +93,24 @@ function commandExists(command) {
 }
 
 function getNpmPath() {
+  if (process.platform === 'win32') {
+    const npmPath = getCommandPath('npm');
+
+    if (!npmPath) {
+      fail(
+        'npm could not be found.\n' +
+        'Run "where npm" and "where npm.cmd" in CMD to diagnose the PATH.'
+      );
+    }
+
+    return npmPath;
+  }
+
   const npmPath = getCommandPath('npm');
 
   if (!npmPath) {
     fail(
-      'npm could not be found.\n' +
-      'Run "where npm" in CMD to diagnose the PATH.'
+      'npm could not be found in PATH.'
     );
   }
 
@@ -111,28 +123,29 @@ function npm(args, options = {}) {
     allowFailure = false
   } = options;
 
-  let npmPath = getCommandPath('npm');
-
-  if (
-    process.platform === 'win32' &&
-    npmPath &&
-    !/\.(cmd|exe)$/i.test(npmPath)
-  ) {
-    const cmdPath = `${npmPath}.cmd`;
-
-    if (fs.existsSync(cmdPath)) {
-      npmPath = cmdPath;
-    }
-  }
-
-  if (!npmPath) {
-    fail(
-      'npm could not be found.\n' +
-      'Run "where npm" and "where npm.cmd" in CMD to diagnose the PATH.'
-    );
-  }
+  const npmPath = getNpmPath();
 
   try {
+    if (process.platform === 'win32') {
+      return execFileSync(
+        process.env.ComSpec || 'cmd.exe',
+        [
+          '/d',
+          '/s',
+          '/c',
+          npmPath,
+          ...args
+        ],
+        {
+          stdio: silent
+            ? ['ignore', 'pipe', 'pipe']
+            : 'inherit',
+          encoding: 'utf8',
+          windowsHide: false
+        }
+      ).trim();
+    }
+
     return execFileSync(
       npmPath,
       args,
@@ -163,7 +176,6 @@ function npm(args, options = {}) {
     process.exit(1);
   }
 }
-
 function git(args, options = {}) {
   const {
     silent = false,
