@@ -46,36 +46,46 @@ function success(message) {
 function getCommandPath(command) {
   if (process.platform !== 'win32') {
     try {
-      execFileSync('which', [command], {
+      return execFileSync('which', [command], {
         stdio: ['ignore', 'pipe', 'ignore'],
         encoding: 'utf8'
-      });
-
-      return command;
+      }).trim() || null;
     } catch {
       return null;
     }
   }
 
-  try {
-    const output = execFileSync(
-      'where.exe',
-      [command],
-      {
-        stdio: ['ignore', 'pipe', 'ignore'],
-        encoding: 'utf8'
+  const candidates = [
+    `${command}.cmd`,
+    `${command}.exe`,
+    command
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      const output = execFileSync(
+        'where.exe',
+        [candidate],
+        {
+          stdio: ['ignore', 'pipe', 'ignore'],
+          encoding: 'utf8'
+        }
+      ).trim();
+
+      const result = output
+        .split(/\r?\n/)
+        .map(value => value.trim())
+        .find(Boolean);
+
+      if (result) {
+        return result;
       }
-    ).trim();
-
-    const result = output
-      .split(/\r?\n/)
-      .map(value => value.trim())
-      .find(Boolean);
-
-    return result || null;
-  } catch {
-    return null;
+    } catch {
+      continue;
+    }
   }
+
+  return null;
 }
 
 function commandExists(command) {
@@ -101,7 +111,26 @@ function npm(args, options = {}) {
     allowFailure = false
   } = options;
 
-  const npmPath = getNpmPath();
+  let npmPath = getCommandPath('npm');
+
+  if (
+    process.platform === 'win32' &&
+    npmPath &&
+    !/\.(cmd|exe)$/i.test(npmPath)
+  ) {
+    const cmdPath = `${npmPath}.cmd`;
+
+    if (fs.existsSync(cmdPath)) {
+      npmPath = cmdPath;
+    }
+  }
+
+  if (!npmPath) {
+    fail(
+      'npm could not be found.\n' +
+      'Run "where npm" and "where npm.cmd" in CMD to diagnose the PATH.'
+    );
+  }
 
   try {
     return execFileSync(
