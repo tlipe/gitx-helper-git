@@ -267,19 +267,8 @@ function isDetachedHead() {
 }
 
 function hasRemote(name = 'origin') {
-  return !!gitRead([
-    'remote',
-    'get-url',
-    name
-  ]);
-}
-
-function remoteUrl(name = 'origin') {
-  return gitRead([
-    'remote',
-    'get-url',
-    name
-  ]);
+  const url = remoteUrl(name);
+  return !!url;
 }
 
 function remoteBranchExists(branch, remote = 'origin') {
@@ -421,6 +410,16 @@ function fixRemoteIfInvalid() {
 
     success(`Remote normalized: ${clean}`);
   }
+}
+
+function remoteUrl(name = 'origin') {
+  const result = gitRead([
+    'remote',
+    'get-url',
+    name
+  ]);
+  
+  return result || '';
 }
 
 // ===== branch =====
@@ -767,31 +766,81 @@ function getInstalledGitxVersion() {
   }
 }
 
-function update() {
+function getLatestGitxVersionFromGitHub() {
+  try {
+    const https = require('https');
+    
+    return new Promise((resolve, reject) => {
+      https.get(
+        'https://api.github.com/repos/tlipe/gitx-helper-git/releases/latest',
+        {
+          headers: {
+            'User-Agent': 'gitx-cli'
+          }
+        },
+        (res) => {
+          let data = '';
+          
+          res.on('data', chunk => data += chunk);
+          res.on('end', () => {
+            try {
+              const parsed = JSON.parse(data);
+              const version = parsed.tag_name?.replace(/^v/, '') || '';
+              resolve(version);
+            } catch {
+              resolve('');
+            }
+          });
+        }
+      ).on('error', () => resolve('')).setTimeout(3000, () => {
+        resolve('');
+      });
+    });
+  } catch {
+    return Promise.resolve('');
+  }
+}
+
+async function update() {
   const currentVersion = pkg.version;
-
-  info(`Current version: ${currentVersion}`);
-  info('Updating gitx directly from GitHub...');
-
+  
+  info('Checking for updates...');
+  
+  const latestVersion = await getLatestGitxVersionFromGitHub();
+  
+  if (latestVersion && latestVersion === currentVersion) {
+    success(`gitx is up to date (${currentVersion}).`);
+    info('No update needed.');
+    return;
+  }
+  
+  if (!latestVersion) {
+    info('Could not fetch latest version from GitHub.');
+    info('Attempting direct update from repository...');
+  } else {
+    info(`Current: ${currentVersion} | Latest: ${latestVersion}`);
+    info('Updating gitx directly from GitHub...');
+  }
+  
   npm([
     'install',
     '--global',
     gitxRepository
   ]);
-
+  
   const installedVersion = getInstalledGitxVersion();
-
+  
   if (!installedVersion) {
     fail(
       'gitx was installed, but the installed version could not be verified.'
     );
   }
-
+  
   if (installedVersion === currentVersion) {
     success(`gitx is already up to date (${installedVersion}).`);
     return;
   }
-
+  
   success(
     `gitx updated: ${currentVersion} -> ${installedVersion}`
   );
@@ -1064,18 +1113,11 @@ function help() {
 gitx - safe Git synchronization CLI
 
 Usage:
-  gitx init <repo_url>
-  gitx sync "message"
-  gitx update
-  gitx status
-  gitx diff
-  gitx log
-  gitx remote
-  gitx snapshot
-  gitx doctor
-  gitx cancel
-  gitx set-remote <repo_url>
-  gitx force
+  gitx .              Sync current changes (commit, fetch, rebase, push)
+  gitx "message"      Sync with a custom commit message
+  gitx push           Push current branch to remote
+  gitx init <repo>    Initialize repo and configure origin
+  gitx update         Update gitx directly from GitHub
 
 Information:
   gitx --version
@@ -1083,18 +1125,26 @@ Information:
   gitx help
 
 Commands:
-  init          Initialize repository and configure origin
-  sync          Safely commit, fetch, rebase and push
-  update        Update gitx directly from GitHub
-  status        Show repository state
-  diff          Show local unstaged changes
-  log           Show recent commits
-  remote        Show origin URL
-  snapshot      Create a local safety snapshot
-  doctor        Diagnose repository state
-  cancel        Abort an active Git operation
-  set-remote    Change origin URL
-  force         Protected force push using --force-with-lease
+  .               Shorthand for sync without message (auto-commit)
+  <message>       Sync with custom commit message
+  push            Push current branch to origin
+  init <repo>     Initialize repository and set origin remote
+  update          Update gitx from GitHub
+  status          Show repository state
+  diff            Show local unstaged changes
+  log             Show recent commits
+  remote          Show origin URL
+  snapshot        Create a local safety snapshot
+  doctor          Diagnose repository state
+  cancel          Abort an active Git operation
+  set-remote      Change origin URL
+  force           Protected force push using --force-with-lease
+
+Examples:
+  gitx .                    # Quick sync with auto-generated commit message
+  gitx "fix bug"            # Sync with custom commit message
+  gitx push                 # Just push to remote
+  gitx init https://...     # Initialize and set remote in one command
 
 Safety model:
   - Never uses --force automatically
@@ -1138,6 +1188,24 @@ function main() {
 
   try {
     switch (command) {
+      case '.':
+        sync('update');
+        break;
+
+      case 'push':
+        ensureRepository();
+        ensureNoOperationInProgress();
+        
+        const branch = ensureBranch();
+        
+        if (!hasRemote()) {
+          fail('No origin remote configured. Use: gitx init <repo_url>');
+        }
+        
+        push(branch);
+        success('Push completed.');
+        break;
+
       case 'init':
         init(args[0]);
         break;
@@ -1187,7 +1255,9 @@ function main() {
         break;
 
       default:
-        unknownCommand(command);
+        // If command is not a known subcommand, treat it as a sync message
+        sync(command);
+        break;
     }
   } catch {
     process.exitCode = 1;
