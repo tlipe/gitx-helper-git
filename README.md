@@ -361,3 +361,13 @@ git checkout -b feature/your-feature
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](https://github.com/tlipe/gitx-helper-git/blob/main/LICENSE) for details.
+
+---
+
+<p align="center">
+  If this project is useful to you, consider giving it a star.
+  <br />
+  <a href="https://github.com/tlipe/windows-repair-clis/stargazers">
+    <img src="https://img.shields.io/badge/Star_this_Project-★-yellow?style=for-the-badge&logo=github" alt="Star this project" />
+  </a>
+</p>
